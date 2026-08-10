@@ -1,7 +1,7 @@
 """SQLite-backed CRM tools for the MCP server and tests."""
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 from config.settings import settings
 
@@ -48,7 +48,7 @@ def fetch_tasks() -> List[Dict[str, Any]]:
 def update_opportunity_stage(opportunity_id: str, stage: str, deal_value: Optional[float] = None) -> Dict[str, Any]:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    today_str = datetime.utcnow().date().isoformat()
+    today_str = datetime.now(UTC).date().isoformat()
     if deal_value is not None:
         cursor.execute("UPDATE opportunities SET current_stage = ?, stage_last_updated = ?, deal_value = ? WHERE opportunity_id = ?", (stage, today_str, deal_value, opportunity_id))
     else:

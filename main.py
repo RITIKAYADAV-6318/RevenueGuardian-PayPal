@@ -1,15 +1,26 @@
 """FastAPI backend for Revenue Guardian."""
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from agents.deterministic_workflow import RevOpsOrchestrator
 from config.settings import settings
-from models.domain import LoginRequest, TokenResponse
+from models.domain import ApprovalCreateRequest, ApprovalDecisionRequest, LoginRequest, TokenResponse
 from mcp.server import read_calendar, read_crm, read_emails
-from security.auth import authenticate_user, create_access_token
+from security.auth import authenticate_user, create_access_token, verify_access_token
 from services.audit_service import fetch_audit_logs, log_audit_event
+from services.approval_service import create_approval, decide_approval, list_approvals
 
 app = FastAPI(title="Revenue Guardian API", version="1.0.0")
+
+
+def current_user_from_authorization(authorization: str = Header(default="")) -> Dict[str, Any]:
+    if not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    payload = verify_access_token(authorization.split(" ", 1)[1].strip())
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return {"username": payload.get("sub", "unknown"), "role": payload.get("role", "")}
+
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
@@ -27,7 +38,7 @@ def login(request: LoginRequest) -> TokenResponse:
 
 @app.post("/api/audit/run")
 async def run_audit() -> Dict[str, Any]:
-    run_id = f"api_run_{int(datetime.utcnow().timestamp())}"
+    run_id = f"api_run_{int(datetime.now(UTC).timestamp())}"
     result = await RevOpsOrchestrator().execute_workflow(run_id)
     log_audit_event("api", "run_audit", result.status, {"run_id": run_id, "mode": result.mode})
     return result.model_dump()
@@ -47,3 +58,33 @@ def calendar(max_results: int = 10):
 @app.get("/api/audit/logs")
 def audit_logs(limit: int = 100):
     return fetch_audit_logs(limit=limit)
+
+
+@app.post("/api/approvals")
+def request_approval(request: ApprovalCreateRequest) -> Dict[str, Any]:
+    record = create_approval(
+        action_type=request.action_type,
+        target=request.target,
+        payload=request.payload,
+        requested_by=request.requested_by,
+        reason=request.reason,
+    )
+    return record.model_dump()
+
+@app.get("/api/approvals")
+def approvals(status: str = "pending", limit: int = 100):
+    normalized_status = status if status else None
+    return [record.model_dump() for record in list_approvals(status=normalized_status, limit=limit)]
+
+@app.post("/api/approvals/{approval_id}/decision")
+def approval_decision(approval_id: int, request: ApprovalDecisionRequest, authorization: str = Header(default="")) -> Dict[str, Any]:
+    user = current_user_from_authorization(authorization)
+    try:
+        record = decide_approval(approval_id=approval_id, decision=request.decision, user=user, note=request.note)
+        return record.model_dump()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

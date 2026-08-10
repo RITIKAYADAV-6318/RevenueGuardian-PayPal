@@ -22,7 +22,7 @@ Exposed Tools:
 
 import logging
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 
 # Import FastMCP from the official mcp package
 try:
@@ -172,7 +172,7 @@ def read_calendar(max_results: int = 10) -> Dict[str, Any]:
         A dictionary containing calendar events and availability slots.
     """
     logger.info("MCP Tool Executing: read_calendar")
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     start_time_iso = now.isoformat() + 'Z'
     end_time_iso = (now + timedelta(days=7)).isoformat() + 'Z'
     
@@ -203,7 +203,7 @@ def send_email(to_email: str, subject: str, body: str) -> Dict[str, Any]:
         "to": to_email,
         "subject": subject,
         "body": body,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "status": "sent"
     }
     MOCK_STATE["sent_emails"].append(email_record)
@@ -287,7 +287,7 @@ def generate_dashboard(summary_data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "status": "success",
         "message": "Dashboard visualization payload updated.",
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.now(UTC).isoformat()
     }
 
 

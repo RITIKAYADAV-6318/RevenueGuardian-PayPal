@@ -23,9 +23,11 @@ def setup_test_database():
     # 1. Override the DB_PATH in the modules
     import mcp.crm_tools
     import services.audit_service
+    import services.approval_service
     
     mcp.crm_tools.DB_PATH = TEST_DB_PATH
     services.audit_service.DB_PATH = TEST_DB_PATH
+    services.approval_service.DB_PATH = TEST_DB_PATH
 
     # Remove any existing test database file
     if os.path.exists(TEST_DB_PATH):
@@ -34,6 +36,7 @@ def setup_test_database():
     # 2. Initialize the tables and seed them
     mcp.crm_tools.init_crm_database()
     services.audit_service.init_audit_log_database()
+    services.approval_service.init_approval_database()
 
     yield
 

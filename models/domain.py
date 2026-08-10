@@ -58,3 +58,29 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: Dict[str, Any]
+
+
+class ApprovalCreateRequest(BaseModel):
+    action_type: str
+    target: str
+    payload: Dict[str, Any]
+    requested_by: str = "api"
+    reason: str = ""
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str
+    note: str = ""
+
+class ApprovalRecord(BaseModel):
+    approval_id: int
+    action_type: str
+    target: str
+    payload: Dict[str, Any]
+    requested_by: str
+    reason: str
+    status: str
+    created_at: str
+    decided_by: Optional[str] = None
+    decided_at: Optional[str] = None
+    decision_note: str = ""
+    execution_result: Optional[Dict[str, Any]] = None

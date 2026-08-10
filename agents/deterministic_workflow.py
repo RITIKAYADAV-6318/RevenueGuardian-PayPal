@@ -1,11 +1,11 @@
 """Deterministic mock workflow for no-key local demos and tests."""
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 from config.settings import settings
 from models.domain import ExecutiveRevenueSummary, ExecutiveSummaryResult, HighPriorityDealSummary, OrchestrationRunResult, OrchestratorFailureLog, TodayRecommendation
 
 def build_demo_summary() -> ExecutiveSummaryResult:
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(UTC).isoformat()
     revenue_summary = ExecutiveRevenueSummary(total_arr=228000.0, revenue_at_risk=93000.0, forecasted_revenue_next_30_days=184800.0, unbilled_overages=500.0)
     high_priority_deals = [
         HighPriorityDealSummary(opportunity_id="OPP_201", name="Acme Corp - Enterprise Expansion", value=75000.0, win_probability=0.35, primary_risk="Pricing dispute and missed renewal meeting", recommended_action="Offer overage concession and schedule executive call"),
@@ -62,9 +62,9 @@ class RevOpsOrchestrator:
                 return OrchestrationRunResult(
                     run_id=run_id,
                     status="partial_success",
-                    timestamp=datetime.utcnow().isoformat(),
+                    timestamp=datetime.now(UTC).isoformat(),
                     executive_summary=build_demo_summary(),
-                    failures=[OrchestratorFailureLog(agent_name="live_adk_orchestrator", error_message=f"Live ADK failed; returned deterministic fallback. {exc}", timestamp=datetime.utcnow().isoformat())],
+                    failures=[OrchestratorFailureLog(agent_name="live_adk_orchestrator", error_message=f"Live ADK failed; returned deterministic fallback. {exc}", timestamp=datetime.now(UTC).isoformat())],
                     mode="deterministic_fallback",
                 )
-        return OrchestrationRunResult(run_id=run_id, status="success", timestamp=datetime.utcnow().isoformat(), executive_summary=build_demo_summary(), mode="deterministic_mock")
+        return OrchestrationRunResult(run_id=run_id, status="success", timestamp=datetime.now(UTC).isoformat(), executive_summary=build_demo_summary(), mode="deterministic_mock")

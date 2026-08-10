@@ -2,7 +2,7 @@
 import json
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 from config.settings import settings
 
@@ -20,7 +20,7 @@ def init_audit_log_database() -> None:
 init_audit_log_database()
 
 def log_audit_event(actor: str, action: str, status: str, details: Any = None) -> int:
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(UTC).isoformat()
     if details is None:
         details_str = ""
     elif isinstance(details, (dict, list)):

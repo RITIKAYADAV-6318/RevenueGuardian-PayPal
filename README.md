@@ -59,6 +59,18 @@ Useful endpoints:
 
 Demo users are local-only: `admin/admin123`, `cfo/cfo123`, `sales/sales123`.
 
+
+
+## Human-in-the-Loop Approvals
+
+Risky actions can be queued before execution:
+
+- `POST /api/approvals` creates a pending approval.
+- `GET /api/approvals?status=pending` lists pending approvals.
+- `POST /api/approvals/{approval_id}/decision` approves or rejects with a bearer token.
+
+Approval roles are enforced with RBAC. For example, billing actions such as `offer_discount` require `CFO` or `RevOps_Manager`, while email drafts can be approved by sales, customer success, or RevOps roles.
+
 ## Docker
 
 ```bash
