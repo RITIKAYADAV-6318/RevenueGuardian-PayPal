@@ -25,7 +25,18 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 # Import FastMCP from the official mcp package
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except Exception:
+    class FastMCP:
+        def __init__(self, name: str):
+            self.name = name
+        def tool(self):
+            def decorator(func):
+                return func
+            return decorator
+        def run(self):
+            raise RuntimeError("FastMCP SDK is unavailable because the local mcp package shadows the installed SDK. Direct tool imports still work.")
 
 # Import real Google Gmail API tools
 from mcp.gmail_tools import list_gmail_threads, create_gmail_reply_draft

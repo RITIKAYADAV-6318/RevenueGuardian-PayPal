@@ -1,10 +1,4 @@
-# ==============================================================================
-# Revenue Guardian - Multi-Container Orchestration
-# ==============================================================================
-version: "3.8"
-
 services:
-  # 1. FastAPI Backend & MCP Server
   backend:
     build:
       context: .
@@ -19,13 +13,9 @@ services:
     env_file:
       - .env
     environment:
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
       - DATABASE_URL=sqlite:///crm.db
-    restart: always
+    restart: unless-stopped
 
-  # 2. Executive Streamlit Dashboard
   dashboard:
     build:
       context: .
@@ -40,9 +30,7 @@ services:
     env_file:
       - .env
     environment:
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - BACKEND_URL=http://backend:8000
     depends_on:
       - backend
-    restart: always
+    restart: unless-stopped
