@@ -122,7 +122,8 @@ class RevOpsOrchestrator:
             session_id: The session ID for the execution.
 
         Returns:
-            The structured Pydantic output from the agent.
+            The structured Pydantic output from the agent, or None if it
+            could not be extracted (caller should treat this as a failure).
         """
         runner = Runner(
             agent=agent,
@@ -133,6 +134,36 @@ class RevOpsOrchestrator:
         new_message = make_new_message(prompt, role="user")
         raw = runner.run(user_id="system", session_id=session_id, new_message=new_message)
         response = await run_runner_and_get_response(raw)
+
+        # --- Defensive extraction layer ---
+        # run_runner_and_get_response tries its best, but guard against the
+        # case where a raw ADK Event still leaked through (it has no
+        # .structured_output resolved at the top level).
+        if response is None:
+            logger.warning(f"[{agent.name}] No response returned from runner.")
+            return None
+
+        # If structured_output is available directly on the returned object,
+        # prefer it over the object itself (handles Event or wrapper shapes).
+        structured = getattr(response, "structured_output", None)
+        if structured is not None:
+            return structured
+
+        # If the response is a plain dict, return it as-is — Pydantic will
+        # coerce it to the correct model at the OrchestrationRunResult level.
+        if isinstance(response, dict):
+            return response
+
+        # If the type name is "Event" the extraction failed; log and signal None.
+        if type(response).__name__ == "Event":
+            logger.error(
+                f"[{agent.name}] Runner returned a raw ADK Event instead of a "
+                "structured output. The agent may have produced no final answer "
+                "or the output_schema was not satisfied. Treating as failure."
+            )
+            return None
+
+        # Looks like a proper Pydantic model or other useful object — return it.
         return response
 
     async def execute_workflow(self, run_id: str) -> OrchestrationRunResult:
@@ -176,33 +207,36 @@ class RevOpsOrchestrator:
         results = await asyncio.gather(crm_task, email_task, calendar_task, return_exceptions=True)
 
         # Process CRM Agent result
-        if isinstance(results[0], Exception):
-            logger.error(f"CRM Agent failed: {str(results[0])}")
+        if isinstance(results[0], Exception) or results[0] is None:
+            err = str(results[0]) if isinstance(results[0], Exception) else "Agent returned no structured output (raw Event leak or empty response)."
+            logger.error(f"CRM Agent failed: {err}")
             failures.append(OrchestratorFailureLog(
                 agent_name="crm_intelligence_agent",
-                error_message=str(results[0]),
+                error_message=err,
                 timestamp=datetime.utcnow().isoformat()
             ))
         else:
             context["crm_analysis"] = results[0]
 
         # Process Email Agent result
-        if isinstance(results[1], Exception):
-            logger.error(f"Email Agent failed: {str(results[1])}")
+        if isinstance(results[1], Exception) or results[1] is None:
+            err = str(results[1]) if isinstance(results[1], Exception) else "Agent returned no structured output (raw Event leak or empty response)."
+            logger.error(f"Email Agent failed: {err}")
             failures.append(OrchestratorFailureLog(
                 agent_name="email_intelligence_agent",
-                error_message=str(results[1]),
+                error_message=err,
                 timestamp=datetime.utcnow().isoformat()
             ))
         else:
             context["email_analysis"] = results[1]
 
         # Process Calendar Agent result
-        if isinstance(results[2], Exception):
-            logger.error(f"Calendar Agent failed: {str(results[2])}")
+        if isinstance(results[2], Exception) or results[2] is None:
+            err = str(results[2]) if isinstance(results[2], Exception) else "Agent returned no structured output (raw Event leak or empty response)."
+            logger.error(f"Calendar Agent failed: {err}")
             failures.append(OrchestratorFailureLog(
                 agent_name="calendar_agent",
-                error_message=str(results[2]),
+                error_message=err,
                 timestamp=datetime.utcnow().isoformat()
             ))
         else:
@@ -214,19 +248,34 @@ class RevOpsOrchestrator:
         logger.info("Executing Phase 2: Revenue Prediction...")
         
         # Build prompt incorporating Phase 1 outputs (Shared Context Passing)
+        def _safe_json(obj: Any) -> str:
+            """Safely serialise a context value that may be a Pydantic model or plain dict."""
+            if obj is None:
+                return "No data available due to agent failure."
+            if hasattr(obj, "model_dump_json"):
+                return obj.model_dump_json()
+            try:
+                import json as _json
+                return _json.dumps(obj)
+            except Exception:
+                return str(obj)
+
         prediction_prompt = (
             "Run the revenue prediction models as of 2026-06-30.\n\n"
             "Here is the context gathered from the other agents:\n"
-            f"CRM Analysis: {context['crm_analysis'].model_dump_json() if context['crm_analysis'] else 'No data available due to agent failure.'}\n\n"
-            f"Email Analysis: {context['email_analysis'].model_dump_json() if context['email_analysis'] else 'No data available due to agent failure.'}\n\n"
-            f"Calendar Analysis: {context['calendar_analysis'].model_dump_json() if context['calendar_analysis'] else 'No data available due to agent failure.'}\n\n"
+            f"CRM Analysis: {_safe_json(context['crm_analysis'])}\n\n"
+            f"Email Analysis: {_safe_json(context['email_analysis'])}\n\n"
+            f"Calendar Analysis: {_safe_json(context['calendar_analysis'])}\n\n"
             "Calculate opportunity win probabilities, revenue at risk, and the 30-day forecast."
         )
 
         try:
-            context["prediction_analysis"] = await self._run_agent(
+            prediction_result = await self._run_agent(
                 self.prediction_agent, prediction_prompt, f"{run_id}_prediction"
             )
+            if prediction_result is None:
+                raise RuntimeError("Agent returned no structured output (raw Event leak or empty response).")
+            context["prediction_analysis"] = prediction_result
         except Exception as e:
             logger.error(f"Prediction Agent failed: {str(e)}")
             failures.append(OrchestratorFailureLog(
@@ -243,17 +292,20 @@ class RevOpsOrchestrator:
         recovery_prompt = (
             "Determine the optimal recovery strategy for all at-risk accounts as of 2026-06-30.\n\n"
             "Here is the synthesized context from the previous agents:\n"
-            f"CRM Analysis: {context['crm_analysis'].model_dump_json() if context['crm_analysis'] else 'N/A'}\n"
-            f"Email Analysis: {context['email_analysis'].model_dump_json() if context['email_analysis'] else 'N/A'}\n"
-            f"Calendar Analysis: {context['calendar_analysis'].model_dump_json() if context['calendar_analysis'] else 'N/A'}\n"
-            f"Revenue Prediction: {context['prediction_analysis'].model_dump_json() if context['prediction_analysis'] else 'N/A'}\n\n"
+            f"CRM Analysis: {_safe_json(context['crm_analysis'])}\n"
+            f"Email Analysis: {_safe_json(context['email_analysis'])}\n"
+            f"Calendar Analysis: {_safe_json(context['calendar_analysis'])}\n"
+            f"Revenue Prediction: {_safe_json(context['prediction_analysis'])}\n\n"
             "Draft concrete actions (call, email, escalate, discount, reassign) with confidence scores and reasoning."
         )
 
         try:
-            context["recovery_strategy"] = await self._run_agent(
+            recovery_result = await self._run_agent(
                 self.recovery_agent, recovery_prompt, f"{run_id}_recovery"
             )
+            if recovery_result is None:
+                raise RuntimeError("Agent returned no structured output (raw Event leak or empty response).")
+            context["recovery_strategy"] = recovery_result
         except Exception as e:
             logger.error(f"Recovery Agent failed: {str(e)}")
             failures.append(OrchestratorFailureLog(
@@ -270,18 +322,21 @@ class RevOpsOrchestrator:
         summary_prompt = (
             "Generate the final dashboard-ready executive summary as of 2026-06-30.\n\n"
             "Here is the complete context compiled across all agents:\n"
-            f"CRM Analysis: {context['crm_analysis'].model_dump_json() if context['crm_analysis'] else 'N/A'}\n"
-            f"Email Analysis: {context['email_analysis'].model_dump_json() if context['email_analysis'] else 'N/A'}\n"
-            f"Calendar Analysis: {context['calendar_analysis'].model_dump_json() if context['calendar_analysis'] else 'N/A'}\n"
-            f"Revenue Prediction: {context['prediction_analysis'].model_dump_json() if context['prediction_analysis'] else 'N/A'}\n"
-            f"Recovery Strategy: {context['recovery_strategy'].model_dump_json() if context['recovery_strategy'] else 'N/A'}\n\n"
+            f"CRM Analysis: {_safe_json(context['crm_analysis'])}\n"
+            f"Email Analysis: {_safe_json(context['email_analysis'])}\n"
+            f"Calendar Analysis: {_safe_json(context['calendar_analysis'])}\n"
+            f"Revenue Prediction: {_safe_json(context['prediction_analysis'])}\n"
+            f"Recovery Strategy: {_safe_json(context['recovery_strategy'])}\n\n"
             "Compile the Morning Briefing, Executive Report, Revenue Summary, High-Priority Deals, and Today's Recommendations."
         )
 
         try:
-            context["executive_summary"] = await self._run_agent(
+            summary_result = await self._run_agent(
                 self.summary_agent, summary_prompt, f"{run_id}_summary"
             )
+            if summary_result is None:
+                raise RuntimeError("Agent returned no structured output (raw Event leak or empty response).")
+            context["executive_summary"] = summary_result
         except Exception as e:
             logger.error(f"Summary Agent failed: {str(e)}")
             failures.append(OrchestratorFailureLog(
