@@ -1,14 +1,17 @@
 """FastAPI backend for Revenue Guardian."""
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from agents.deterministic_workflow import RevOpsOrchestrator
 from config.settings import settings
 from models.domain import ApprovalCreateRequest, ApprovalDecisionRequest, LoginRequest, TokenResponse
 from mcp.server import read_calendar, read_crm, read_emails
 from security.auth import authenticate_user, create_access_token, verify_access_token
 from security.rbac import Permission, has_permission
-from services.audit_service import fetch_audit_logs, log_audit_event
+from services import webhook_service
+from services.audit_service import fetch_audit_logs, log_audit_event, verify_audit_chain
 from services.approval_service import ACTION_PERMISSION, create_approval, decide_approval, list_approvals
 
 app = FastAPI(title="Revenue Guardian API", version="1.0.0")
@@ -105,3 +108,28 @@ def approval_decision(approval_id: int, request: ApprovalDecisionRequest, author
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/webhooks/paypal")
+async def paypal_webhook(request: Request) -> JSONResponse:
+    """Public by design: authenticity comes from PayPal's signature, verified against the raw body."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    client_key = forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    if webhook_service.rate_limited(client_key):
+        return JSONResponse(status_code=429, content={"status": "rate_limited"})
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > webhook_service.MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"status": "too_large"})
+    raw_body = await request.body()
+    status_code, body = await run_in_threadpool(webhook_service.process_webhook, dict(request.headers), raw_body)
+    return JSONResponse(status_code=status_code, content=body)
+
+
+@app.get("/api/events")
+def webhook_events(limit: int = 100, provenance: str = "", user: Dict[str, Any] = Depends(require_user)):
+    return webhook_service.list_events(limit=limit, provenance=provenance or None)
+
+
+@app.get("/api/audit/verify")
+def audit_verify(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    return verify_audit_chain()

@@ -66,6 +66,10 @@ class Settings(BaseModel):
     analysis_date: str = Field(default="2026-06-30")
     use_live_adk: bool = Field(default=False)
     paypal_mode: str = Field(default="mock")
+    paypal_client_id: str = Field(default="")
+    paypal_client_secret: str = Field(default="")
+    paypal_webhook_id: str = Field(default="")
+    paypal_api_base: str = Field(default="https://api-m.sandbox.paypal.com")
 
     @property
     def secure_mode(self) -> bool:
@@ -78,6 +82,8 @@ class Settings(BaseModel):
         return sqlite_path_from_database_url(self.database_url)
 
     def validate_security(self) -> None:
+        if self.paypal_mode not in {"mock", "sandbox"}:
+            raise RuntimeError(f"PAYPAL_MODE must be 'mock' or 'sandbox' (got {self.paypal_mode!r}). Live PayPal is intentionally unsupported in this project.")
         if not self.gemini_api_key:
             logger.warning("GEMINI_API_KEY is not set. Live ADK/Gemini execution is disabled unless USE_LIVE_ADK=true.")
         if self.jwt_secret_key == INSECURE_DEFAULT_JWT_SECRET:
@@ -98,6 +104,10 @@ def get_settings() -> Settings:
         analysis_date=os.environ.get("ANALYSIS_DATE", "2026-06-30"),
         use_live_adk=os.environ.get("USE_LIVE_ADK", "false").lower() in {"1", "true", "yes", "on"},
         paypal_mode=os.environ.get("PAYPAL_MODE", "mock").lower(),
+        paypal_client_id=os.environ.get("PAYPAL_CLIENT_ID", ""),
+        paypal_client_secret=os.environ.get("PAYPAL_CLIENT_SECRET", ""),
+        paypal_webhook_id=os.environ.get("PAYPAL_WEBHOOK_ID", ""),
+        paypal_api_base=os.environ.get("PAYPAL_API_BASE", "https://api-m.sandbox.paypal.com").rstrip("/"),
     )
     settings.validate_security()
     return settings
