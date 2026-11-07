@@ -54,6 +54,7 @@ def test_approval_api_requires_authorized_role():
     client = TestClient(main.app)
     created = client.post(
         "/api/approvals",
+        headers={"Authorization": f"Bearer {_token('sales', 'Sales_Rep')}"},
         json={
             "action_type": "offer_discount",
             "target": "Acme Corp",

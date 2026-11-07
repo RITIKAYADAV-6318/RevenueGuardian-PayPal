@@ -65,6 +65,13 @@ class Settings(BaseModel):
     temperature: float = Field(default=0.2)
     analysis_date: str = Field(default="2026-06-30")
     use_live_adk: bool = Field(default=False)
+    paypal_mode: str = Field(default="mock")
+
+    @property
+    def secure_mode(self) -> bool:
+        """True on a hosted/public deployment: refuse insecure defaults instead of warning."""
+        explicit = os.environ.get("SECURE_MODE", "").lower() in {"1", "true", "yes", "on"}
+        return explicit or bool(os.environ.get("RENDER")) or self.paypal_mode == "sandbox"
 
     @property
     def sqlite_db_path(self) -> str:
@@ -74,6 +81,8 @@ class Settings(BaseModel):
         if not self.gemini_api_key:
             logger.warning("GEMINI_API_KEY is not set. Live ADK/Gemini execution is disabled unless USE_LIVE_ADK=true.")
         if self.jwt_secret_key == INSECURE_DEFAULT_JWT_SECRET:
+            if self.secure_mode:
+                raise RuntimeError("Refusing to start: JWT_SECRET_KEY is the insecure default while running in secure mode (RENDER / SECURE_MODE / PAYPAL_MODE=sandbox). Set a long random JWT_SECRET_KEY.")
             logger.warning("Using the default JWT_SECRET_KEY. This is acceptable for local demo only; change it for deployment.")
 
 def get_settings() -> Settings:
@@ -88,6 +97,7 @@ def get_settings() -> Settings:
         temperature=_get_float_env("GEMINI_TEMPERATURE", 0.2),
         analysis_date=os.environ.get("ANALYSIS_DATE", "2026-06-30"),
         use_live_adk=os.environ.get("USE_LIVE_ADK", "false").lower() in {"1", "true", "yes", "on"},
+        paypal_mode=os.environ.get("PAYPAL_MODE", "mock").lower(),
     )
     settings.validate_security()
     return settings

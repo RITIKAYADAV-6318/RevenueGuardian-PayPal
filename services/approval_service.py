@@ -128,6 +128,26 @@ def _execute_action(action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]
     return {"status": "error", "message": f"Unsupported action type: {action_type}"}
 
 
+def _claim_pending(approval_id: int, status: str, decided_by: str, decided_at: str, note: str) -> bool:
+    """Atomically move a pending approval to `status`. Returns False if it was no longer pending.
+
+    The conditional UPDATE is the lock: only one caller can win, so an approval can never be
+    executed twice (e.g. double click, retried request, two reviewers at once).
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, decision_note = ? "
+            "WHERE approval_id = ? AND status = 'pending'",
+            (status, decided_by, decided_at, note, approval_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
+
+
 def decide_approval(approval_id: int, decision: str, user: Dict[str, Any], note: str = "") -> ApprovalRecord:
     record = get_approval(approval_id)
     if not record:
@@ -140,27 +160,34 @@ def decide_approval(approval_id: int, decision: str, user: Dict[str, Any], note:
         raise ValueError("decision must be 'approved' or 'rejected'.")
     ensure_can_decide(user, record.action_type)
 
-    execution_result = None
-    final_status = normalized
-    if normalized == "approved":
-        execution_result = _execute_action(record.action_type, record.payload)
-        if execution_result.get("status") == "error":
-            final_status = "failed"
-
-    now = datetime.now(UTC).isoformat()
     decided_by = user.get("username") or user.get("sub") or "unknown"
+    now = datetime.now(UTC).isoformat()
+
+    if normalized == "rejected":
+        if not _claim_pending(approval_id, "rejected", decided_by, now, note):
+            raise ValueError(f"Approval {approval_id} is already decided.")
+        updated = get_approval(approval_id)
+        log_audit_event(decided_by, "approval_decided", "success", updated.model_dump())
+        return updated
+
+    # Approved: claim first ("executing"), run the action exactly once, then record the outcome.
+    if not _claim_pending(approval_id, "executing", decided_by, now, note):
+        raise ValueError(f"Approval {approval_id} is already being decided or was decided.")
+    try:
+        execution_result = _execute_action(record.action_type, record.payload)
+    except Exception as exc:  # never leave an approval stuck in 'executing' or silently retryable
+        execution_result = {"status": "error", "message": f"Execution raised {type(exc).__name__}: {exc}"}
+    final_status = "failed" if execution_result.get("status") == "error" else "approved"
+
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        UPDATE approvals
-        SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?, execution_result = ?
-        WHERE approval_id = ?
-        """,
-        (final_status, decided_by, now, note, json.dumps(execution_result) if execution_result else None, approval_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "UPDATE approvals SET status = ?, execution_result = ? WHERE approval_id = ?",
+            (final_status, json.dumps(execution_result), approval_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     updated = get_approval(approval_id)
-    log_audit_event(decided_by, "approval_decided", "success" if final_status in {"approved", "rejected"} else "failed", updated.model_dump())
+    log_audit_event(decided_by, "approval_decided", "success" if final_status == "approved" else "failed", updated.model_dump())
     return updated

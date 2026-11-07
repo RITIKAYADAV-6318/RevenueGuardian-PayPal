@@ -1,6 +1,7 @@
 """JWT authentication and demo user helpers."""
 import hashlib
 import logging
+import os
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -29,10 +30,23 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         logger.error("Password verification error: %s", exc)
         return False
 
+_DEFAULT_DEMO_PASSWORDS = {"admin": "admin123", "cfo": "cfo123", "sales": "sales123"}
+
+
+def _demo_password(username: str) -> str:
+    """Demo passwords can be overridden with DEMO_<USER>_PASSWORD. Defaults are refused in secure mode."""
+    value = os.environ.get(f"DEMO_{username.upper()}_PASSWORD")
+    if value:
+        return value
+    if settings.secure_mode:
+        raise RuntimeError(f"Refusing to start: set DEMO_{username.upper()}_PASSWORD (default demo passwords are not allowed in secure mode).")
+    return _DEFAULT_DEMO_PASSWORDS[username]
+
+
 MOCK_USERS_DB = {
-    "admin": {"username": "admin", "hashed_password": hash_password("admin123"), "role": "RevOps_Manager", "email": "admin@guardian.com"},
-    "cfo": {"username": "cfo", "hashed_password": hash_password("cfo123"), "role": "CFO", "email": "cfo@guardian.com"},
-    "sales": {"username": "sales", "hashed_password": hash_password("sales123"), "role": "Sales_Rep", "email": "sales@guardian.com"},
+    "admin": {"username": "admin", "hashed_password": hash_password(_demo_password("admin")), "role": "RevOps_Manager", "email": "admin@guardian.com"},
+    "cfo": {"username": "cfo", "hashed_password": hash_password(_demo_password("cfo")), "role": "CFO", "email": "cfo@guardian.com"},
+    "sales": {"username": "sales", "hashed_password": hash_password(_demo_password("sales")), "role": "Sales_Rep", "email": "sales@guardian.com"},
 }
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

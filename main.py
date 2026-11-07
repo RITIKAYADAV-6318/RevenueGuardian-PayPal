@@ -1,14 +1,15 @@
 """FastAPI backend for Revenue Guardian."""
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from agents.deterministic_workflow import RevOpsOrchestrator
 from config.settings import settings
 from models.domain import ApprovalCreateRequest, ApprovalDecisionRequest, LoginRequest, TokenResponse
 from mcp.server import read_calendar, read_crm, read_emails
 from security.auth import authenticate_user, create_access_token, verify_access_token
+from security.rbac import Permission, has_permission
 from services.audit_service import fetch_audit_logs, log_audit_event
-from services.approval_service import create_approval, decide_approval, list_approvals
+from services.approval_service import ACTION_PERMISSION, create_approval, decide_approval, list_approvals
 
 app = FastAPI(title="Revenue Guardian API", version="1.0.0")
 
@@ -20,6 +21,20 @@ def current_user_from_authorization(authorization: str = Header(default="")) -> 
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return {"username": payload.get("sub", "unknown"), "role": payload.get("role", "")}
+
+
+def require_user(authorization: str = Header(default="")) -> Dict[str, Any]:
+    """Any signed-in user."""
+    return current_user_from_authorization(authorization)
+
+
+def require_permission(permission: Permission):
+    """Signed-in user whose role holds `permission` (403 otherwise)."""
+    def dependency(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+        if not has_permission(user.get("role", ""), permission):
+            raise HTTPException(status_code=403, detail=f"Role '{user.get('role', '')}' lacks permission '{permission.value}'.")
+        return user
+    return dependency
 
 
 @app.get("/health")
@@ -37,42 +52,44 @@ def login(request: LoginRequest) -> TokenResponse:
     return TokenResponse(access_token=token, user=public_user)
 
 @app.post("/api/audit/run")
-async def run_audit() -> Dict[str, Any]:
+async def run_audit(user: Dict[str, Any] = Depends(require_permission(Permission.RUN_AUDIT))) -> Dict[str, Any]:
     run_id = f"api_run_{int(datetime.now(UTC).timestamp())}"
     result = await RevOpsOrchestrator().execute_workflow(run_id)
-    log_audit_event("api", "run_audit", result.status, {"run_id": run_id, "mode": result.mode})
+    log_audit_event(user["username"], "run_audit", result.status, {"run_id": run_id, "mode": result.mode})
     return result.model_dump()
 
 @app.get("/api/crm")
-def crm() -> Dict[str, Any]:
+def crm(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     return read_crm()
 
 @app.get("/api/emails")
-def emails(max_results: int = 10):
+def emails(max_results: int = 10, user: Dict[str, Any] = Depends(require_user)):
     return read_emails(max_results=max_results)
 
 @app.get("/api/calendar")
-def calendar(max_results: int = 10):
+def calendar(max_results: int = 10, user: Dict[str, Any] = Depends(require_user)):
     return read_calendar(max_results=max_results)
 
 @app.get("/api/audit/logs")
-def audit_logs(limit: int = 100):
+def audit_logs(limit: int = 100, user: Dict[str, Any] = Depends(require_user)):
     return fetch_audit_logs(limit=limit)
 
 
 @app.post("/api/approvals")
-def request_approval(request: ApprovalCreateRequest) -> Dict[str, Any]:
+def request_approval(request: ApprovalCreateRequest, user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    if request.action_type not in ACTION_PERMISSION:
+        raise HTTPException(status_code=400, detail=f"Unknown action_type '{request.action_type}'. Allowed: {sorted(ACTION_PERMISSION)}")
     record = create_approval(
         action_type=request.action_type,
         target=request.target,
         payload=request.payload,
-        requested_by=request.requested_by,
+        requested_by=user["username"],  # taken from the token, never from the request body
         reason=request.reason,
     )
     return record.model_dump()
 
 @app.get("/api/approvals")
-def approvals(status: str = "pending", limit: int = 100):
+def approvals(status: str = "pending", limit: int = 100, user: Dict[str, Any] = Depends(require_user)):
     normalized_status = status if status else None
     return [record.model_dump() for record in list_approvals(status=normalized_status, limit=limit)]
 
