@@ -1,0 +1,34 @@
+# Render Blueprint for the Revenue Guardian API (webhook receiver + approvals + audit).
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo and branch. See docs/DEPLOY_RENDER.md.
+services:
+  - type: web
+    name: revenue-guardian-api
+    runtime: python
+    plan: free            # Free plan: filesystem is NOT persistent (see docs/DEPLOY_RENDER.md, "Data persistence").
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: SECURE_MODE
+        value: "true"
+      - key: PAYPAL_MODE
+        value: sandbox
+      - key: PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: DEMO_ADMIN_PASSWORD
+        sync: false
+      - key: DEMO_CFO_PASSWORD
+        sync: false
+      - key: DEMO_SALES_PASSWORD
+        sync: false

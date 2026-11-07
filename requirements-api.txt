@@ -1,0 +1,8 @@
+# Minimal dependencies for the API service (used by Render). Ranges were tested at both ends:
+# fastapi 0.139 / pydantic 2.13 / pyjwt 2.13 (Python 3.14) and fastapi 0.162 / pydantic 2.14 / pyjwt 2.7 (Python 3.12).
+# The full requirements.txt (Streamlit, Google ADK, MCP SDK, ...) is only needed for the dashboard and live-agent mode.
+fastapi>=0.139,<1
+uvicorn>=0.47,<1
+pydantic>=2.13,<3
+pyjwt>=2.7,<3
+httpx>=0.28,<1

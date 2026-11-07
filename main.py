@@ -42,7 +42,12 @@ def require_permission(permission: Permission):
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    return {"status": "ok", "mode": "live_adk" if settings.use_live_adk else "deterministic_mock"}
+    return {
+        "status": "ok",
+        "mode": "live_adk" if settings.use_live_adk else "deterministic_mock",
+        "paypal_mode": settings.paypal_mode,
+        "webhook_verification_configured": bool(settings.paypal_client_id and settings.paypal_client_secret and settings.paypal_webhook_id),
+    }
 
 @app.post("/auth/login", response_model=TokenResponse)
 def login(request: LoginRequest) -> TokenResponse:

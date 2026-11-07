@@ -66,3 +66,12 @@ def test_secure_mode_accepts_custom_secret(monkeypatch):
     monkeypatch.setenv("SECURE_MODE", "true")
     monkeypatch.setenv("JWT_SECRET_KEY", "x" * 48)
     assert cs.get_settings().secure_mode is True
+
+
+def test_health_reports_paypal_mode_without_leaking_secrets(monkeypatch):
+    from config.settings import settings
+    monkeypatch.setattr(settings, "paypal_client_secret", "super-secret")
+    body = client.get("/health").json()
+    assert body["paypal_mode"] in {"mock", "sandbox"}
+    assert isinstance(body["webhook_verification_configured"], bool)
+    assert "super-secret" not in str(body)
