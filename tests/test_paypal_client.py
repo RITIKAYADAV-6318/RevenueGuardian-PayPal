@@ -100,3 +100,20 @@ def test_network_error_is_unavailable(monkeypatch):
     monkeypatch.setattr(pc, "_transport", httpx.MockTransport(boom))
     with pytest.raises(pc.PayPalUnavailable):
         pc.verify_webhook_signature(HEADERS, RAW)
+
+
+def test_api_request_sends_bearer_and_request_id_and_maps_outages(monkeypatch):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/oauth2/token":
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+        seen.append((request.method, request.url.path, request.headers.get("authorization"), request.headers.get("paypal-request-id"), request.content))
+        return httpx.Response(503) if request.url.path.endswith("/down") else httpx.Response(201, json={"href": "x/invoices/INV2-1"})
+
+    monkeypatch.setattr(pc, "_transport", httpx.MockTransport(handler))
+    status, body = pc.api_request("POST", "/v2/invoicing/invoices", json_body={"a": 1}, request_id="rid-1")
+    assert status == 201 and body["href"].endswith("INV2-1")
+    assert seen[0][:4] == ("POST", "/v2/invoicing/invoices", "Bearer tok", "rid-1") and json.loads(seen[0][4]) == {"a": 1}
+    with pytest.raises(pc.PayPalUnavailable):
+        pc.api_request("POST", "/v2/down")

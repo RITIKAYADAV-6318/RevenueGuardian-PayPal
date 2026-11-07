@@ -18,6 +18,8 @@ ACTION_PERMISSION = {
     "update_crm_opportunity": Permission.UPDATE_CRM,
     "approve_billing": Permission.APPROVE_BILLING,
     "offer_discount": Permission.APPROVE_BILLING,
+    "create_paypal_invoice": Permission.APPROVE_BILLING,
+    "send_invoice_reminder": Permission.APPROVE_BILLING,
 }
 
 
@@ -123,6 +125,12 @@ def _execute_action(action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]
         return mcp_server.schedule_meeting(**payload)
     if action_type == "update_crm_opportunity":
         return mcp_server.update_crm_opportunity(**payload)
+    if action_type == "create_paypal_invoice":
+        from services import invoice_service
+        return invoice_service.create_and_send_invoice(payload)
+    if action_type == "send_invoice_reminder":
+        from services import invoice_service
+        return invoice_service.send_reminder(payload)
     if action_type in {"approve_billing", "offer_discount"}:
         return {"status": "success", "mode": "approval_recorded", "message": "Billing approval recorded for downstream execution.", "payload": payload}
     return {"status": "error", "message": f"Unsupported action type: {action_type}"}
@@ -174,7 +182,8 @@ def decide_approval(approval_id: int, decision: str, user: Dict[str, Any], note:
     if not _claim_pending(approval_id, "executing", decided_by, now, note):
         raise ValueError(f"Approval {approval_id} is already being decided or was decided.")
     try:
-        execution_result = _execute_action(record.action_type, record.payload)
+        payload = {**record.payload, "proposal_id": approval_id} if record.action_type == "create_paypal_invoice" else record.payload
+        execution_result = _execute_action(record.action_type, payload)
     except Exception as exc:  # never leave an approval stuck in 'executing' or silently retryable
         execution_result = {"status": "error", "message": f"Execution raised {type(exc).__name__}: {exc}"}
     final_status = "failed" if execution_result.get("status") == "error" else "approved"

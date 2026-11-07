@@ -127,6 +127,8 @@ def process_webhook(headers: Mapping[str, str], raw_body: bytes) -> Tuple[int, D
     if not _insert(event_id, event_type, provenance, verified, transmission_id, raw_text):
         return 200, {"status": "duplicate", "event_id": event_id}
     log_audit_event("paypal", "webhook_received", "success", {"event_id": event_id, "event_type": event_type, "provenance": provenance})
+    from services import invoice_service  # late import: invoice_service must not be needed to store an event
+    invoice_service.handle_event(event, provenance)
     return 200, {"status": "received", "event_id": event_id, "provenance": provenance}
 
 

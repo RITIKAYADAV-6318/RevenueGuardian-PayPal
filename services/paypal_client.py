@@ -112,3 +112,31 @@ def verify_webhook_signature(headers: Mapping[str, str], raw_body: bytes) -> boo
     if response.status_code != 200:
         return False
     return response.json().get("verification_status") == "SUCCESS"
+
+
+def api_request(method: str, path: str, *, json_body: Optional[dict] = None, request_id: Optional[str] = None):
+    """Authenticated call to the PayPal sandbox REST API. Returns (status_code, parsed_json_or_text).
+
+    `request_id` becomes the PayPal-Request-Id header, so a retried call with the same id is not executed twice.
+    Raises PayPalNotConfigured / PayPalUnavailable (network failure, rejected token, HTTP 429/5xx).
+    """
+    token = get_access_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"}
+    if request_id:
+        headers["PayPal-Request-Id"] = request_id
+    try:
+        with _client() as client:
+            response = client.request(method, f"{settings.paypal_api_base}{path}", headers=headers,
+                                      content=json.dumps(json_body).encode("utf-8") if json_body is not None else None)
+    except httpx.HTTPError as exc:
+        raise PayPalUnavailable(f"{method} {path} failed: {exc}") from exc
+    if response.status_code == 401:
+        reset_token_cache()
+        raise PayPalUnavailable("PayPal rejected our access token")
+    if response.status_code == 429 or response.status_code >= 500:
+        raise PayPalUnavailable(f"{method} {path} returned HTTP {response.status_code}")
+    try:
+        body = response.json() if response.content else {}
+    except ValueError:
+        body = response.text
+    return response.status_code, body

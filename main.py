@@ -10,7 +10,7 @@ from models.domain import ApprovalCreateRequest, ApprovalDecisionRequest, LoginR
 from mcp.server import read_calendar, read_crm, read_emails
 from security.auth import authenticate_user, create_access_token, verify_access_token
 from security.rbac import Permission, has_permission
-from services import webhook_service
+from services import invoice_service, webhook_service
 from services.audit_service import fetch_audit_logs, log_audit_event, verify_audit_chain
 from services.approval_service import ACTION_PERMISSION, create_approval, decide_approval, list_approvals
 
@@ -138,3 +138,28 @@ def webhook_events(limit: int = 100, provenance: str = "", user: Dict[str, Any] 
 @app.get("/api/audit/verify")
 def audit_verify(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     return verify_audit_chain()
+
+
+@app.get("/api/invoices")
+def invoices(status: str = "", user: Dict[str, Any] = Depends(require_user)):
+    return invoice_service.list_invoices(status=status or None)
+
+
+@app.get("/api/kpis")
+def kpis(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    return invoice_service.kpis()
+
+
+@app.post("/api/invoices/sweep")
+def invoice_sweep(user: Dict[str, Any] = Depends(require_permission(Permission.APPROVE_BILLING))) -> Dict[str, Any]:
+    """Propose reminders for overdue invoices. Creates pending approvals only; nothing is sent."""
+    created = invoice_service.propose_overdue_reminders(requested_by=user["username"])
+    return {"proposed": len(created), "approvals": created}
+
+
+@app.post("/api/invoices/{proposal_id}/simulate-payment")
+def simulate_payment(proposal_id: int, user: Dict[str, Any] = Depends(require_permission(Permission.APPROVE_BILLING))) -> Dict[str, Any]:
+    result = invoice_service.simulate_payment(proposal_id, actor=user["username"])
+    if result["status"] != "success":
+        raise HTTPException(status_code=409, detail=result["message"])
+    return result
