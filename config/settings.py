@@ -70,6 +70,7 @@ class Settings(BaseModel):
     paypal_client_secret: str = Field(default="")
     paypal_webhook_id: str = Field(default="")
     paypal_api_base: str = Field(default="https://api-m.sandbox.paypal.com")
+    demo_overdue_minutes: int = Field(default=0)  # >0: treat invoices unpaid for this long as overdue (labelled demo threshold)
 
     @property
     def secure_mode(self) -> bool:
@@ -82,6 +83,8 @@ class Settings(BaseModel):
         return sqlite_path_from_database_url(self.database_url)
 
     def validate_security(self) -> None:
+        if not 0 <= self.demo_overdue_minutes <= 1440:
+            raise RuntimeError("DEMO_OVERDUE_MINUTES must be between 0 and 1440.")
         if self.paypal_mode not in {"mock", "sandbox"}:
             raise RuntimeError(f"PAYPAL_MODE must be 'mock' or 'sandbox' (got {self.paypal_mode!r}). Live PayPal is intentionally unsupported in this project.")
         if not self.gemini_api_key:
@@ -108,6 +111,7 @@ def get_settings() -> Settings:
         paypal_client_secret=os.environ.get("PAYPAL_CLIENT_SECRET", ""),
         paypal_webhook_id=os.environ.get("PAYPAL_WEBHOOK_ID", ""),
         paypal_api_base=os.environ.get("PAYPAL_API_BASE", "https://api-m.sandbox.paypal.com").rstrip("/"),
+        demo_overdue_minutes=int(os.environ.get("DEMO_OVERDUE_MINUTES", "0") or 0),
     )
     settings.validate_security()
     return settings

@@ -31,7 +31,9 @@ DB_PATH = settings.sqlite_db_path
 INVOICE_ACTIONS = {"create_paypal_invoice", "send_invoice_reminder"}
 PAID_EVENT = "INVOICING.INVOICE.PAID"
 CANCELLED_EVENT = "INVOICING.INVOICE.CANCELLED"
-MAX_AMOUNT = 1_000_000.0
+MAX_AMOUNT = 10_000.0          # sandbox demo ceiling
+CFO_REQUIRED_AT = 500.0       # invoices at or above this can only be approved by the CFO
+MAX_REMINDERS = 2             # per invoice
 MIN_REMINDER_GAP_DAYS = 3
 
 PENDING, SENT, PAID, CANCELLED, FAILED = "PENDING", "SENT", "PAID", "CANCELLED", "FAILED"
@@ -68,6 +70,8 @@ def init_invoice_database() -> None:
             last_reminder_at TEXT,
             last_error TEXT)""")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_invoice_paypal_id ON invoices(paypal_invoice_id) WHERE paypal_invoice_id IS NOT NULL")
+        if "payer_link" not in {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}:
+            conn.execute("ALTER TABLE invoices ADD COLUMN payer_link TEXT")  # where the buyer pays; lets a judge finish the loop
         conn.commit()
     finally:
         conn.close()
@@ -147,6 +151,30 @@ def validate_invoice_payload(payload: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def validate_action_payload(action_type: str, payload: Dict[str, Any]) -> Optional[str]:
+    """Checked when a proposal is created, so a bad request never reaches the approval queue. None means acceptable."""
+    if action_type == "create_paypal_invoice":
+        return validate_invoice_payload(payload)
+    if action_type == "send_invoice_reminder":
+        target = payload.get("invoice_proposal_id")
+        row = get_invoice(target) if isinstance(target, int) else None
+        if not row:
+            return "invoice_proposal_id must refer to an invoice Revenue Guardian created"
+        if row["status"] != SENT:
+            return f"invoice is {row['status']}; reminders are only for unpaid, sent invoices"
+    return None
+
+
+def requires_cfo(action_type: str, payload: Dict[str, Any]) -> bool:
+    """Large invoices need the CFO specifically; an unreadable amount is never trusted."""
+    if action_type != "create_paypal_invoice":
+        return False
+    try:
+        return float(payload.get("amount")) >= CFO_REQUIRED_AT
+    except (TypeError, ValueError):
+        return True
+
+
 # ---------- PayPal calls ----------
 
 def _invoice_id_from_create_response(body: Any) -> Optional[str]:
@@ -161,6 +189,11 @@ def _invoice_id_from_create_response(body: Any) -> Optional[str]:
     return None
 
 
+def _recipient_name(row: Dict[str, Any]) -> Dict[str, str]:
+    parts = (row["customer_name"] or row["customer_email"]).strip().split(" ", 1)
+    return {"given_name": parts[0], "surname": parts[1] if len(parts) > 1 else "."}
+
+
 def _build_invoice_body(row: Dict[str, Any]) -> Dict[str, Any]:
     reference = f"RG-{row['proposal_id']}"
     return {
@@ -169,9 +202,9 @@ def _build_invoice_body(row: Dict[str, Any]) -> Dict[str, Any]:
             "currency_code": row["currency"],
             "note": f"{row['description']} (Revenue Guardian proposal {reference})",
             "invoice_date": date.today().isoformat(),
-            "payment_term": {"due_date": row["due_date"]},
+            "payment_term": {"term_type": "DUE_ON_DATE_SPECIFIED", "due_date": row["due_date"]},
         },
-        "primary_recipients": [{"billing_info": {"name": {"full_name": row["customer_name"] or row["customer_email"]}, "email_address": row["customer_email"]}}],
+        "primary_recipients": [{"billing_info": {"name": _recipient_name(row), "email_address": row["customer_email"]}}],
         "items": [{
             "name": row["description"],
             "quantity": "1",
@@ -233,7 +266,14 @@ def create_and_send_invoice(payload: Dict[str, Any]) -> Dict[str, Any]:
         log_audit_event("invoice_service", "invoice_send_failed", "failed", {"proposal_id": proposal_id, "reason": str(exc)[:300]})
         return {"status": "error", "message": f"PayPal invoice not sent: {exc}"}
 
-    _update(proposal_id, status=SENT, sent_at=_now(), last_error=None)
+    payer_link = None
+    try:  # convenience only: the invoice is already sent, so a failed lookup must not fail the approval
+        code, invoice = paypal_client.api_request("GET", f"/v2/invoicing/invoices/{paypal_id}")
+        if code == 200 and isinstance(invoice, dict):
+            payer_link = ((invoice.get("detail") or {}).get("metadata") or {}).get("recipient_view_url")
+    except (paypal_client.PayPalNotConfigured, paypal_client.PayPalUnavailable):
+        pass
+    _update(proposal_id, status=SENT, sent_at=_now(), last_error=None, payer_link=payer_link)
     log_audit_event("invoice_service", "invoice_sent", "success", {"proposal_id": proposal_id, "invoice_id": paypal_id, "mode": "sandbox"})
     return {"status": "success", "mode": "sandbox", "message": "PayPal sandbox invoice created and sent.", "invoice": get_invoice(proposal_id)}
 
@@ -246,6 +286,8 @@ def send_reminder(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": "Unknown invoice for this reminder."}
     if row["status"] != SENT:
         return {"status": "error", "message": f"Invoice is {row['status']}; reminders are only sent for unpaid, sent invoices."}
+    if row["reminders_sent"] >= MAX_REMINDERS:
+        return {"status": "error", "message": f"Reminder limit reached ({MAX_REMINDERS} per invoice)."}
     note = str(payload.get("note") or "Friendly reminder: this invoice is still open.")[:500]
     if row["mode"] == "sandbox":
         try:
@@ -317,13 +359,26 @@ def simulate_payment(proposal_id: int, actor: str) -> Dict[str, Any]:
 
 # ---------- overdue sweep + KPIs ----------
 
+def _reminder_gap() -> timedelta:
+    minutes = settings.demo_overdue_minutes
+    return timedelta(minutes=minutes) if minutes > 0 else timedelta(days=MIN_REMINDER_GAP_DAYS)
+
+
 def overdue_invoices(today: Optional[date] = None) -> List[Dict[str, Any]]:
+    """Unpaid invoices past their due date. With DEMO_OVERDUE_MINUTES > 0, invoices unpaid for that long also count
+    (a labelled demo threshold, so a sweep can be shown without waiting for a real due date)."""
     today = today or date.today()
-    cutoff = (datetime.now(UTC) - timedelta(days=MIN_REMINDER_GAP_DAYS)).isoformat()
-    return [
-        r for r in list_invoices(status=SENT)
-        if r["due_date"] < today.isoformat() and (not r["last_reminder_at"] or r["last_reminder_at"] < cutoff)
-    ]
+    now = datetime.now(UTC)
+    gap_cutoff = (now - _reminder_gap()).isoformat()
+    demo_minutes = settings.demo_overdue_minutes
+    demo_cutoff = (now - timedelta(minutes=demo_minutes)).isoformat() if demo_minutes > 0 else None
+    result = []
+    for r in list_invoices(status=SENT):
+        past_due = r["due_date"] < today.isoformat() or bool(demo_cutoff and r["sent_at"] and r["sent_at"] < demo_cutoff)
+        reminder_ok = not r["last_reminder_at"] or r["last_reminder_at"] < gap_cutoff
+        if past_due and reminder_ok and r["reminders_sent"] < MAX_REMINDERS:
+            result.append(r)
+    return result
 
 
 def propose_overdue_reminders(requested_by: str) -> List[Dict[str, Any]]:

@@ -107,11 +107,15 @@ def required_permission(action_type: str) -> Permission:
     return ACTION_PERMISSION.get(action_type, Permission.BYPASS_APPROVALS)
 
 
-def ensure_can_decide(user: Dict[str, Any], action_type: str) -> None:
+def ensure_can_decide(user: Dict[str, Any], action_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
     permission = required_permission(action_type)
     role = user.get("role", "")
     if not has_permission(role, permission):
         raise PermissionError(f"Role '{role}' cannot approve '{action_type}'. Requires '{permission.value}'.")
+    if payload is not None:
+        from services import invoice_service
+        if invoice_service.requires_cfo(action_type, payload) and role != "CFO":
+            raise PermissionError(f"Invoices of {invoice_service.CFO_REQUIRED_AT:,.0f} or more can only be approved by the CFO (role '{role}').")
 
 
 def _execute_action(action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -166,7 +170,7 @@ def decide_approval(approval_id: int, decision: str, user: Dict[str, Any], note:
     normalized = decision.lower().strip()
     if normalized not in {"approved", "rejected"}:
         raise ValueError("decision must be 'approved' or 'rejected'.")
-    ensure_can_decide(user, record.action_type)
+    ensure_can_decide(user, record.action_type, record.payload)
 
     decided_by = user.get("username") or user.get("sub") or "unknown"
     now = datetime.now(UTC).isoformat()

@@ -63,7 +63,8 @@ def test_mock_mode_invoice_is_created_without_any_network_call(monkeypatch):
 def test_sandbox_invoice_request_shape_and_idempotency_key(sandbox):
     done = _approve_invoice()
     assert done.status == "approved"
-    (m1, p1, body, rid1), (m2, p2, _, rid2) = sandbox.calls
+    assert [c[:2] for c in sandbox.calls[2:]] == [("GET", "/v2/invoicing/invoices/INV2-ABC")]  # payer-link lookup after sending
+    (m1, p1, body, rid1), (m2, p2, _, rid2) = sandbox.calls[:2]
     assert (m1, p1) == ("POST", "/v2/invoicing/invoices") and p2 == "/v2/invoicing/invoices/INV2-ABC/send"
     assert body["items"][0]["unit_amount"] == {"currency_code": "USD", "value": "1250.50"}
     assert body["detail"]["reference"] == f"RG-{done.approval_id}"

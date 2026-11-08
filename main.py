@@ -87,6 +87,9 @@ def audit_logs(limit: int = 100, user: Dict[str, Any] = Depends(require_user)):
 def request_approval(request: ApprovalCreateRequest, user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     if request.action_type not in ACTION_PERMISSION:
         raise HTTPException(status_code=400, detail=f"Unknown action_type '{request.action_type}'. Allowed: {sorted(ACTION_PERMISSION)}")
+    problem = invoice_service.validate_action_payload(request.action_type, request.payload)
+    if problem:
+        raise HTTPException(status_code=400, detail=f"Policy check failed: {problem}")
     record = create_approval(
         action_type=request.action_type,
         target=request.target,
@@ -154,7 +157,7 @@ def kpis(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
 def invoice_sweep(user: Dict[str, Any] = Depends(require_permission(Permission.APPROVE_BILLING))) -> Dict[str, Any]:
     """Propose reminders for overdue invoices. Creates pending approvals only; nothing is sent."""
     created = invoice_service.propose_overdue_reminders(requested_by=user["username"])
-    return {"proposed": len(created), "approvals": created}
+    return {"proposed": len(created), "approvals": created, "demo_threshold_minutes": settings.demo_overdue_minutes or None}
 
 
 @app.post("/api/invoices/{proposal_id}/simulate-payment")
