@@ -328,4 +328,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## Author
 
-Built by Ritika Yadav for the PayPal AI Hackathon.
+Built for the PayPal AI Hackathon.
