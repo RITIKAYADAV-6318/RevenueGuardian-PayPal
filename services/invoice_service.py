@@ -383,6 +383,7 @@ def overdue_invoices(today: Optional[date] = None) -> List[Dict[str, Any]]:
 
 def propose_overdue_reminders(requested_by: str) -> List[Dict[str, Any]]:
     """Create one pending approval per overdue invoice that has none yet. Humans still decide."""
+    from services import ai_drafts
     from services.approval_service import create_approval, list_approvals
 
     already = {r.payload.get("invoice_proposal_id") for r in list_approvals(status="pending", limit=500) if r.action_type == "send_invoice_reminder"}
@@ -390,12 +391,13 @@ def propose_overdue_reminders(requested_by: str) -> List[Dict[str, Any]]:
     for row in overdue_invoices():
         if row["proposal_id"] in already:
             continue
+        draft = ai_drafts.draft_reminder(row)  # Gemini drafts the text; a human still approves; template fallback if it fails
         record = create_approval(
             action_type="send_invoice_reminder",
             target=row["customer_email"],
-            payload={"invoice_proposal_id": row["proposal_id"], "note": f"Reminder: invoice for {row['currency']} {row['amount']:.2f} was due {row['due_date']}."},
+            payload={"invoice_proposal_id": row["proposal_id"], "note": draft["note"], "tone": draft["tone"], "ai_draft": draft["ai"]},
             requested_by=requested_by,
-            reason=f"Invoice overdue since {row['due_date']}.",
+            reason=f"Invoice overdue since {row['due_date']}. {draft['tone'].title()} reminder suggested ({draft['ai']['provider']}): {draft['rationale']}",
         )
         created.append(record.model_dump())
     return created

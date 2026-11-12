@@ -44,6 +44,8 @@ def setup_test_database():
     services.webhook_service.init_webhook_database()
     services.invoice_service.init_invoice_database()
     services.webhook_service.reset_rate_limits()
+    import services.ai_drafts
+    services.ai_drafts.reset_call_counter()
 
     yield
 

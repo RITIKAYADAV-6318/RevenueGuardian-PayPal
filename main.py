@@ -1,7 +1,8 @@
 """FastAPI backend for Revenue Guardian."""
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from agents.deterministic_workflow import RevOpsOrchestrator
@@ -26,9 +27,12 @@ def current_user_from_authorization(authorization: str = Header(default="")) -> 
     return {"username": payload.get("sub", "unknown"), "role": payload.get("role", "")}
 
 
-def require_user(authorization: str = Header(default="")) -> Dict[str, Any]:
-    """Any signed-in user."""
-    return current_user_from_authorization(authorization)
+bearer_scheme = HTTPBearer(auto_error=False, description="Log in with POST /auth/login, then paste the access_token here.")
+
+
+def require_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)) -> Dict[str, Any]:
+    """Any signed-in user. Declared as an HTTP bearer scheme so /docs shows an Authorize button."""
+    return current_user_from_authorization(f"Bearer {credentials.credentials}" if credentials else "")
 
 
 def require_permission(permission: Permission):
@@ -46,6 +50,7 @@ def health() -> Dict[str, Any]:
         "status": "ok",
         "mode": "live_adk" if settings.use_live_adk else "deterministic_mock",
         "paypal_mode": settings.paypal_mode,
+        "gemini_configured": bool(settings.gemini_api_key),
         "webhook_verification_configured": bool(settings.paypal_client_id and settings.paypal_client_secret and settings.paypal_webhook_id),
     }
 
@@ -105,8 +110,7 @@ def approvals(status: str = "pending", limit: int = 100, user: Dict[str, Any] = 
     return [record.model_dump() for record in list_approvals(status=normalized_status, limit=limit)]
 
 @app.post("/api/approvals/{approval_id}/decision")
-def approval_decision(approval_id: int, request: ApprovalDecisionRequest, authorization: str = Header(default="")) -> Dict[str, Any]:
-    user = current_user_from_authorization(authorization)
+def approval_decision(approval_id: int, request: ApprovalDecisionRequest, user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
     try:
         record = decide_approval(approval_id=approval_id, decision=request.decision, user=user, note=request.note)
         return record.model_dump()
@@ -157,7 +161,8 @@ def kpis(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
 def invoice_sweep(user: Dict[str, Any] = Depends(require_permission(Permission.APPROVE_BILLING))) -> Dict[str, Any]:
     """Propose reminders for overdue invoices. Creates pending approvals only; nothing is sent."""
     created = invoice_service.propose_overdue_reminders(requested_by=user["username"])
-    return {"proposed": len(created), "approvals": created, "demo_threshold_minutes": settings.demo_overdue_minutes or None}
+    ai_used = sum(1 for r in created if (r["payload"].get("ai_draft") or {}).get("used"))
+    return {"proposed": len(created), "ai_drafted": ai_used, "template_fallback": len(created) - ai_used, "approvals": created, "demo_threshold_minutes": settings.demo_overdue_minutes or None}
 
 
 @app.post("/api/invoices/{proposal_id}/simulate-payment")

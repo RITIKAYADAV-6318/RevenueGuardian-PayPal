@@ -70,6 +70,7 @@ class Settings(BaseModel):
     paypal_client_secret: str = Field(default="")
     paypal_webhook_id: str = Field(default="")
     paypal_api_base: str = Field(default="https://api-m.sandbox.paypal.com")
+    ai_daily_call_cap: int = Field(default=50)  # max live Gemini calls per UTC day; beyond this the template fallback is used
     demo_overdue_minutes: int = Field(default=0)  # >0: treat invoices unpaid for this long as overdue (labelled demo threshold)
 
     @property
@@ -112,6 +113,7 @@ def get_settings() -> Settings:
         paypal_webhook_id=os.environ.get("PAYPAL_WEBHOOK_ID", ""),
         paypal_api_base=os.environ.get("PAYPAL_API_BASE", "https://api-m.sandbox.paypal.com").rstrip("/"),
         demo_overdue_minutes=int(os.environ.get("DEMO_OVERDUE_MINUTES", "0") or 0),
+        ai_daily_call_cap=int(os.environ.get("AI_DAILY_CALL_CAP", "50") or 50),
     )
     settings.validate_security()
     return settings
